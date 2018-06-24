@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <FL/Fl.H>
-#include <FL/Fl_Text_Buffer.H>
 
 #include "fledit.hpp"
 
@@ -21,10 +20,12 @@ struct ConfigOption
 
 static const struct ConfigOption s_configOptions[] =
 {
-    {"line_numbers", TYPE_BOOL, &g_settings.lineNumbers},
-    {"font_face",    TYPE_UINT, &g_settings.fontFace},
-    {"font_size",    TYPE_UINT, &g_settings.fontSize},
-    {"theme",        TYPE_UINT, &g_settings.theme},
+    {"line_numbers",             TYPE_BOOL, &g_settings.lineNumbers},
+    {"font_face",                TYPE_UINT, &g_settings.fontFace},
+    {"font_size",                TYPE_UINT, &g_settings.fontSize},
+    {"theme",                    TYPE_UINT, &g_settings.theme},
+    {"syntax_highlighting",      TYPE_BOOL, &g_settings.syntaxHighlighting},
+    {"mark_double_clicked_word", TYPE_BOOL, &g_settings.markDoubleClickedWord},
 };
 
 static char *s_configFileName = NULL;
@@ -35,6 +36,8 @@ static void load_defaults(void)
     g_settings.fontFace = FL_COURIER;
     g_settings.fontSize = 14;
     g_settings.theme = 0;
+    g_settings.syntaxHighlighting = true;
+    g_settings.markDoubleClickedWord = false;
 }
 
 static char *choose_config_file_path(void)

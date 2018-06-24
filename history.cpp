@@ -151,3 +151,24 @@ void history_redo(struct History *h)
     h->undoCmd = h->redoCmd;
     h->redoCmd = h->redoCmd->next;
 }
+
+void history_free(struct History *h)
+{
+    struct HistoryCommand *cmd;
+
+    cmd = h->undoCmd;
+    while (cmd != NULL)
+    {
+        struct HistoryCommand *prev = cmd->prev;
+        delete cmd;
+        cmd = prev;
+    }
+
+    cmd = h->redoCmd;
+    while (cmd != NULL)
+    {
+        struct HistoryCommand *next = cmd->next;
+        delete cmd;
+        cmd = next;
+    }
+}

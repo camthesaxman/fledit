@@ -1,5 +1,8 @@
 #define ARRAY_LENGTH(arr) (sizeof(arr)/sizeof(arr[0]))
 
+class Fl_Text_Buffer;
+class Fl_Text_Editor;
+
 /* history.cpp */
 
 struct HistoryCommand;
@@ -15,6 +18,7 @@ void history_record_text_insert(struct History *h, unsigned int pos, unsigned in
 void history_record_text_delete(struct History *h, unsigned int pos, unsigned int nDeleted);
 void history_undo(struct History *h);
 void history_redo(struct History *h);
+void history_free(struct History *h);
 
 /* settings.cpp */
 
@@ -24,6 +28,8 @@ struct Settings
     unsigned int fontFace;
     unsigned int fontSize;
     unsigned int theme;
+    bool syntaxHighlighting;
+    bool markDoubleClickedWord;
 };
 
 extern struct Settings g_settings;
@@ -40,3 +46,10 @@ void font_dialog_open(void);
 
 void find_dialog_init(void);
 void find_dialog_show(Fl_Text_Buffer *textBuf);
+
+/* colorize.cpp */
+
+Fl_Text_Buffer *colorize_init(Fl_Text_Buffer *textbuf);
+void colorize_update(Fl_Text_Editor *editor, Fl_Text_Buffer *textbuf, Fl_Text_Buffer *stylebuf);
+void colorize_clear(Fl_Text_Editor *editor, Fl_Text_Buffer *stylebuf);
+void colorize_update_font(Fl_Font font, int size);

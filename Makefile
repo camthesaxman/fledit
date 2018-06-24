@@ -5,7 +5,7 @@ FLTK_LIB := $(FLTK_DIR)/lib/libfltk.a
 CXX := g++
 CXXFLAGS = -isystem $(FLTK_DIR) $(shell $(FLTK_DIR)/fltk-config --cxxflags) -Wall -Wextra -std=c++98 -Wno-missing-field-initializers -g -fsanitize=address
 PROGRAM := fledit
-SOURCES := fledit.cpp settings.cpp history.cpp font_dialog.cpp find_dialog.cpp
+SOURCES := fledit.cpp settings.cpp history.cpp colorize.cpp font_dialog.cpp find_dialog.cpp
 LIBS = $(shell $(FLTK_DIR)/fltk-config --ldstaticflags)
 
 $(PROGRAM): $(SOURCES) | $(FLTK_LIB)

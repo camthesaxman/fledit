@@ -6,7 +6,6 @@
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Return_Button.H>
-#include <FL/Fl_Text_Buffer.H>
 
 #include "fledit.hpp"
 
@@ -35,7 +34,6 @@ static void cb_on_font_select(Fl_Widget *, void *)
         int i;
 
         s_selectedFont = font;
-        printf("numSizes = %i\n", numSizes);
         if (numSizes > 0)
         {
             if (sizes[0] == 0)  // Any size is possible

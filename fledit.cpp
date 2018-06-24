@@ -27,14 +27,22 @@
 
 #define TOOLBAR_HEIGHT 32
 
+enum
+{
+    FILE_ACTION_ERROR = -1,
+    FILE_ACTION_OK = 0,
+    FILE_ACTION_CANCELED = 1,
+};
+
 struct TextFile
 {
+    struct TextFile *next;
     bool modified;
     char filename[FL_PATH_MAX];
     char title[FL_PATH_MAX];
     Fl_Text_Buffer *textbuf;
+    Fl_Text_Buffer *stylebuf;
     Fl_Group *tab;
-    struct TextFile *next;
     struct History history;
 };
 
@@ -47,11 +55,7 @@ static Fl_Tabs *s_tabBar;
 static struct TextFile *s_textFiles = NULL;
 static struct TextFile *s_currTextFile = NULL;
 static const char *const s_themeNames[] = {"none", "plastic", "gtk+", "gleam"};
-static bool s_ignoreModifyCallbacks;
-
-static void history_dump(void)
-{
-}
+static bool s_updateHistoryOnModify = true;
 
 static char *get_base_filename(char *filename)
 {
@@ -78,28 +82,73 @@ static void cb_tab_change(Fl_Widget *, void *)
     Fl_Group *tab = (Fl_Group *)s_tabBar->value();
     struct TextFile *f = (struct TextFile *)tab->user_data();
 
-    //printf("selected tab '%s'\n", f->title);
     set_current_tab(f);
 }
+
+static bool s_ignoreRecursion = false;
 
 static void cb_modified(int pos, int nInserted, int nDeleted, int nRestyled,
     const char *deletedText, void *p)
 {
-    if (s_ignoreModifyCallbacks)
-        return;
+    /*
+    static bool ignoreRecursion;
 
-    struct TextFile *f = (struct TextFile *)p;
+    if (ignoreRecursion)
+    {
+        assert(nDeleted == 0 && nInserted == 0);
+        return;
+    }
+
+    if (g_settings.markDoubleClickedWord && Fl::event_is_click() && Fl::event_clicks())
+    {
+        ignoreRecursion = true;
+
+        char *text = s_currTextFile->textbuf->selection_text();
+        int pos = 0;
+        int foundPos;
+        int length = strlen(text);
+
+        printf("highlighting '%s'\n", text);
+        while (1)
+        {
+            printf("searching at pos %i\n", pos);
+            if (!s_currTextFile->textbuf->search_forward(pos, text, &foundPos, false))
+                break;
+
+            assert(foundPos >= pos);
+            s_currTextFile->textbuf->highlight(foundPos, foundPos + length);
+            pos = foundPos + length;
+            
+            printf("foundPos = %i, pos = %i\n", foundPos, pos);
+        }
+        
+        free(text);
+        
+        ignoreRecursion = false;
+    }
+    */
 
     if (nInserted == 0 && nDeleted == 0)
         return;
 
+    if (g_settings.syntaxHighlighting)
+        colorize_update(s_textEditor, s_currTextFile->textbuf, s_currTextFile->stylebuf);
+
+    if (!s_updateHistoryOnModify)
+        return;
+
+    struct TextFile *f = (struct TextFile *)p;
+
     //printf("modified: pos=%i, nInserted=%i, nDeleted=%i, nRestyled=%i\n",
     //    pos, nInserted, nDeleted, nRestyled);
 
-    if (nInserted != 0)
+    if (s_updateHistoryOnModify)
     {
-        assert(nDeleted == 0);
-        history_record_text_insert(&s_currTextFile->history, pos, nInserted);
+        if (nInserted != 0)
+        {
+            assert(nDeleted == 0);
+            history_record_text_insert(&s_currTextFile->history, pos, nInserted);
+        }
     }
 
     if (!f->modified)
@@ -114,13 +163,14 @@ static void cb_modified(int pos, int nInserted, int nDeleted, int nRestyled,
 
 static void cb_predelete(int pos, int nDeleted, void *data)
 {
-    if (s_ignoreModifyCallbacks)
-        return;
-
-    if (nDeleted == 0)
-        return;
-    printf("deleting: pos=%i, nDeleted=%i\n", pos, nDeleted);
-    history_record_text_delete(&s_currTextFile->history, pos, nDeleted);
+    if (s_updateHistoryOnModify)
+    {
+        if (nDeleted != 0)
+        {
+            printf("deleting: pos=%i, nDeleted=%i\n", pos, nDeleted);
+            history_record_text_delete(&s_currTextFile->history, pos, nDeleted);
+        }
+    }
 }
 
 static void file_list_append(struct TextFile *f)
@@ -156,6 +206,16 @@ static void file_list_remove(struct TextFile *f)
         }
         prev->next = f->next;
     }
+
+    // Remove the buffer from the editor before deleting it, so FLTK won't try to
+    // use it after it's been freed.
+    if (s_textEditor->buffer() == f->textbuf)
+        s_textEditor->buffer(NULL);
+    delete f->textbuf;
+    delete f->stylebuf;
+    Fl::delete_widget(f->tab);
+    history_free(&f->history);
+    delete f;
 }
 
 static struct TextFile *open_text_file(const char *filename)
@@ -175,6 +235,8 @@ static struct TextFile *open_text_file(const char *filename)
     }
     update_file_title(f);
 
+    f->stylebuf = colorize_init(f->textbuf);
+
     f->textbuf->add_modify_callback(cb_modified, f);
     f->textbuf->add_predelete_callback(cb_predelete, f);
 
@@ -190,13 +252,15 @@ static struct TextFile *open_text_file(const char *filename)
 
 static bool save_text_file(struct TextFile *f, const char *filename)
 {
+    printf("save_text_file: filename='%s'\n", filename);
     if (f->textbuf->savefile(filename) != 0)
     {
         fl_alert("Failed to save file: %s", strerror(errno));
         return false;
     }
     f->modified = false;
-    strcpy(f->filename, filename);
+    if (f->filename != filename)
+        strcpy(f->filename, filename);
     update_file_title(f);
     return true;
 }
@@ -218,17 +282,17 @@ static void menu_cb_open(Fl_Widget *, void *)
     chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
     switch (chooser.show())
     {
-    case 0:
+    case FILE_ACTION_OK:
         f = open_text_file(chooser.filename());
         set_current_tab(f);
         break;
-    case -1:
+    case FILE_ACTION_ERROR:
         fl_alert("Failed to open file: %s", chooser.errmsg());
         break;
     }
 }
 
-static int do_save_file_as(struct TextFile *f)
+static int do_save_as(struct TextFile *f)
 {
     Fl_Native_File_Chooser chooser;
     const char *filename;
@@ -239,17 +303,17 @@ static int do_save_file_as(struct TextFile *f)
     result = chooser.show();
     switch (result)
     {
-    case 0:  // picked file
+    case FILE_ACTION_OK:
         filename = chooser.filename();
         printf("saving file to '%s'\n", filename);
         if (save_text_file(f, filename))
-            result = 0;
+            result = FILE_ACTION_OK;
         else
-            result = -1;
+            result = FILE_ACTION_ERROR;
         break;
-    case 1:  // canceled
+    case FILE_ACTION_CANCELED:
         break;
-    case -1:  // errored
+    case FILE_ACTION_ERROR:
         fl_alert("Failed to save file: %s", chooser.errmsg());
         break;
     }
@@ -260,21 +324,52 @@ static int do_save(struct TextFile *f)
 {
     if (s_currTextFile->filename[0] == 0)
     {
-        return do_save_file_as(f);
+        return do_save_as(f);
     }
     else
     {
         printf("saving file to '%s'\n", f->filename);
         if (save_text_file(f, f->filename))
-            return 0;
+            return FILE_ACTION_OK;
         else
-            return -1;
+            return FILE_ACTION_ERROR;
     }
+}
+
+static int do_close(struct TextFile *f)
+{
+    int result;
+
+    if (s_currTextFile->modified)
+    {
+        int button = fl_choice(
+            "The file '%s' is not saved.\n"
+            "Do you want to save it before closing?",
+            "Cancel", "Save", "Don't save",
+            s_currTextFile->title);
+        switch (button)
+        {
+        case 0:  // Cancel
+            return FILE_ACTION_CANCELED;
+        case 1:  // Save
+            result = do_save(s_currTextFile);
+            if (result != FILE_ACTION_OK)
+                return result;
+            break;
+        case 2:  // Don't save
+            break;
+        }
+    }
+
+    // remove the file from the editor
+    s_tabBar->remove(s_currTextFile->tab);
+    file_list_remove(s_currTextFile);
+    return FILE_ACTION_OK;
 }
 
 static void menu_cb_save_as(Fl_Widget *, void *)
 {
-    if (do_save_file_as(s_currTextFile) == 0)
+    if (do_save_as(s_currTextFile) == FILE_ACTION_OK)
     {
         s_mainWindow->label(s_currTextFile->title);
         s_currTextFile->tab->label(s_currTextFile->title);
@@ -284,7 +379,7 @@ static void menu_cb_save_as(Fl_Widget *, void *)
 
 static void menu_cb_save(Fl_Widget *, void *)
 {
-    if (do_save(s_currTextFile) == 0)
+    if (do_save(s_currTextFile) == FILE_ACTION_OK)
     {
         s_mainWindow->label(s_currTextFile->title);
         s_currTextFile->tab->label(s_currTextFile->title);
@@ -294,61 +389,74 @@ static void menu_cb_save(Fl_Widget *, void *)
 
 static void menu_cb_close(Fl_Widget *, void *)
 {
-    if (s_currTextFile->modified)
+    if (do_close(s_currTextFile) == FILE_ACTION_OK)
     {
-        int choice = fl_choice(
-            "The file '%s' is not saved.\n"
-            "Do you want to save it before closing?",
-            "Cancel", "Save", "Don't save",
-            s_currTextFile->title);
-        switch (choice)
+        if (s_textFiles == NULL)
+            s_mainWindow->hide();
+        else
         {
-        case 0:  // Cancel
-            return;
-        case 1:  // Save
-            if (do_save(s_currTextFile) != 0)
-                return;
-            break;
-        case 2:  // Don't save
-            break;
+            set_current_tab(s_textFiles);
+            s_mainWindow->redraw();
         }
     }
+}
 
-    // remove the file from the editor
-    s_tabBar->remove(s_currTextFile->tab);
-    delete s_currTextFile->tab;
-    file_list_remove(s_currTextFile);
-    if (s_textFiles == NULL)
-        Fl::delete_widget(s_mainWindow);
-    else
+static void dump_files(void)
+{
+    struct TextFile *f = s_textFiles;
+
+    puts("files:");
+    while (f != NULL)
     {
-        set_current_tab(s_textFiles);
-        s_mainWindow->redraw();
+        printf("%p {next=%p, title=%s}\n", f, f->next, f->title);
+        f = f->next;
     }
+}
+
+static void menu_cb_exit(Fl_Widget *, void *)
+{
+    struct TextFile *f = s_textFiles;
+
+    dump_files();
+    while (f != NULL)
+    {
+        struct TextFile *next = f->next;
+
+        set_current_tab(f);
+        s_mainWindow->redraw();
+        do_close(f);
+        printf("maybe closed file %p\n", f);
+        dump_files();
+        f = next;
+    }
+    //s_mainWindow->hide();
+    if (s_textFiles == NULL)
+        s_mainWindow->hide();
 }
 
 static void menu_cb_undo(Fl_Widget *, void *)
 {
     // Undoing and redoing modifies the textbuf. The callbacks must ignore this
     // and not try to record it again in the command history.
-    s_ignoreModifyCallbacks = true;
+    s_updateHistoryOnModify = false;
     history_undo(&s_currTextFile->history);
-    s_ignoreModifyCallbacks = false;
+    s_updateHistoryOnModify = true;
 }
 
 static void menu_cb_redo(Fl_Widget *, void *)
 {
     // Undoing and redoing modifies the textbuf. The callbacks must ignore this
     // and not try to record it again in the command history.
-    s_ignoreModifyCallbacks = true;
+    s_updateHistoryOnModify = false;
     history_redo(&s_currTextFile->history);
-    s_ignoreModifyCallbacks = false;
+    s_updateHistoryOnModify = true;
 }
 
-static void menu_cb_exit(Fl_Widget *, void *)
-{
-    s_mainWindow->hide();
-}
+static void menu_cb_cut(Fl_Widget *, void *)
+
+static void menu_cb_copy(Fl_Widget *, void *)
+
+static void menu_cb_paste(Fl_Widget *, void *)
 
 static void menu_cb_find(Fl_Widget *, void *)
 {
@@ -360,7 +468,6 @@ static void menu_cb_line_numbers(Fl_Widget *, void *data)
     g_settings.lineNumbers = !g_settings.lineNumbers;
     if (g_settings.lineNumbers)
     {
-        puts("line numbers enabled");
         s_textEditor->linenumber_width(50);
         s_textEditor->linenumber_font(g_settings.fontFace);
         s_textEditor->linenumber_size(g_settings.fontSize);
@@ -378,11 +485,25 @@ static void menu_cb_font(Fl_Widget *, void *)
     font_dialog_open();
 }
 
+static void menu_cb_syntax_highlighting(Fl_Widget *, void *)
+{
+    g_settings.syntaxHighlighting = !g_settings.syntaxHighlighting;
+    if (g_settings.syntaxHighlighting)
+        colorize_update(s_textEditor, s_currTextFile->textbuf, s_currTextFile->stylebuf);
+    else
+        colorize_clear(s_textEditor, s_currTextFile->stylebuf);
+}
+
 static void menu_cb_gui_theme(Fl_Widget *, void *p)
 {
     unsigned int theme = (uintptr_t)p;
     g_settings.theme = theme;
     Fl::scheme(s_themeNames[theme]);
+}
+
+static void menu_cb_mark_occurrences(Fl_Widget *, void *)
+{
+    g_settings.markDoubleClickedWord = !g_settings.markDoubleClickedWord;
 }
 
 static void menu_cb_about(Fl_Widget *, void *)
@@ -392,7 +513,7 @@ static void menu_cb_about(Fl_Widget *, void *)
 
 static void menu_cb_debug(Fl_Widget *, void *)
 {
-    history_dump();
+    dump_files();
 }
 
 static Fl_Menu_Item s_menuItems[] =
@@ -407,18 +528,25 @@ static Fl_Menu_Item s_menuItems[] =
         {0},
     {"&Edit", 0, NULL, NULL, FL_SUBMENU},
         {"Undo",  FL_COMMAND + 'z', menu_cb_undo},
-        {"Redo",  FL_COMMAND + 'y', menu_cb_redo},
+        {"Redo",  FL_COMMAND + 'y', menu_cb_redo, NULL, FL_MENU_DIVIDER},
+        {"Cut",   FL_COMMAND + 'x', menu_cb_cut},
+        {"Copy",  FL_COMMAND + 'c', menu_cb_copy},
+        {"Paste", FL_COMMAND + 'v', menu_cb_paste, NULL, FL_MENU_DIVIDER},
         {"&Find", FL_COMMAND + 'f', menu_cb_find},
         {0},
     {"&View", 0, NULL, NULL, FL_SUBMENU},
-        {"Line Numbers", 0, menu_cb_line_numbers, &s_menuItems[12], FL_MENU_TOGGLE},
-        {"Font...",      0, menu_cb_font},
+        {"Line Numbers",        0, menu_cb_line_numbers, &s_menuItems[12], FL_MENU_TOGGLE},
+        {"Font...",             0, menu_cb_font},
+        {"Syntax Highlighting", 0, menu_cb_syntax_highlighting, NULL, FL_MENU_TOGGLE},
         {"GUI Theme",    0, NULL, NULL, FL_SUBMENU},
             {"None",    0, menu_cb_gui_theme, (void *)0, FL_MENU_RADIO},
             {"Plastic", 0, menu_cb_gui_theme, (void *)1, FL_MENU_RADIO},
             {"GTK+",    0, menu_cb_gui_theme, (void *)2, FL_MENU_RADIO},
             {"Gleam",   0, menu_cb_gui_theme, (void *)3, FL_MENU_RADIO},
             {0},
+        {0},
+    {"&Tools", 0, NULL, NULL, FL_SUBMENU},
+        {"Mark occurrences of double clicked word", 0, menu_cb_mark_occurrences, NULL, FL_MENU_TOGGLE},
         {0},
     {"&Help", 0, NULL, NULL, FL_SUBMENU},
         {"About", 0, menu_cb_about},
@@ -469,22 +597,17 @@ static Fl_Pack *create_toolbar(const struct ToolbarButton *btns)
 
 static void cb_on_font_apply(void)
 {
-    puts("font changed");
     s_textEditor->textfont(g_settings.fontFace);
     s_textEditor->textsize(g_settings.fontSize);
     s_textEditor->linenumber_font(g_settings.fontFace);
     s_textEditor->linenumber_size(g_settings.fontSize);
+    colorize_update_font(g_settings.fontFace, g_settings.fontSize);
     s_textEditor->redraw();
 }
 
 static Fl_Window *create_main_window(void)
 {
-    Fl_Window *w = new Fl_Double_Window(600, 400);
-
-    w->label("FLedit");
-
-    // build widgets
-    w->begin();
+    Fl_Window *w = new Fl_Double_Window(600, 400, "FLedit");
     {
         s_menuBar = new Fl_Menu_Bar(0, 0, 600, 20);
         s_menuBar->menu(s_menuItems);
@@ -500,6 +623,7 @@ static Fl_Window *create_main_window(void)
         s_textEditor->textsize(g_settings.fontSize);
         s_textEditor->linenumber_font(g_settings.fontFace);
         s_textEditor->linenumber_size(g_settings.fontSize);
+        colorize_update_font(g_settings.fontFace, g_settings.fontSize);
 
         s_textEditor->remove_key_binding('z', FL_COMMAND);
 
@@ -508,6 +632,7 @@ static Fl_Window *create_main_window(void)
     }
     w->end();
 
+    w->callback(menu_cb_exit);
     w->resizable(s_textEditor);
     return w;
 }
@@ -518,43 +643,69 @@ static void set_current_tab(struct TextFile *f)
     s_textEditor->buffer(f->textbuf);
     s_mainWindow->label(f->title);
     s_tabBar->value(f->tab);
+    if (g_settings.syntaxHighlighting)
+        colorize_update(s_textEditor, s_currTextFile->textbuf, s_currTextFile->stylebuf);
 }
 
-int main(int argc, char **argv)
+static void apply_initial_settings(void)
 {
-    struct TextFile *initFile;
-    int exitCode;
+    Fl_Menu_Item *item;
 
-    settings_load();
-
-    s_mainWindow = create_main_window();
-
-    //s_mainWindow->show(argc, argv);
-    s_mainWindow->show();
-    if (argc > 1)
-    {
-        int i;
-        
-        for (i = 1; i < argc; i++)
-            initFile = open_text_file(argv[i]);
-    }
-    else
-        initFile = open_text_file(NULL);
-    set_current_tab(initFile);
-
-    // adjust menu settings
+    // Line Numbers
     if (g_settings.lineNumbers)
     {
-        Fl_Menu_Item *item = &s_menuItems[14];
+        item = &s_menuItems[17];
         assert(strcmp(item->text, "Line Numbers") == 0);
         item->set();
         s_textEditor->linenumber_width(50);
     }
+
+    // Syntax Highlighting
+    if (g_settings.syntaxHighlighting)
+    {
+        item = &s_menuItems[19];
+        assert(strcmp(item->text, "Syntax Highlighting") == 0);
+        item->set();
+    }
+
+    // Theme
     if (g_settings.theme >= ARRAY_LENGTH(s_themeNames))
         g_settings.theme = 0;
+    item = &s_menuItems[20];
+    assert(strcmp(item->text, "GUI Theme") == 0);
+    item[1 + g_settings.theme].set();
     Fl::scheme(s_themeNames[g_settings.theme]);
+    
+    // Mark occurrences of double clicked word
+    if (g_settings.markDoubleClickedWord)
+    {
+        item = &s_menuItems[28];
+        assert(strcmp(item->text, "Mark occurrences of double clicked word") == 0);
+        item->set();
+    }
+}
+
+int main(int argc, char **argv)
+{
+    struct TextFile *initFile = NULL;
+    int exitCode;
+    int i;
+
+    settings_load();
+
+    s_mainWindow = create_main_window();
+    s_mainWindow->show();
+
+    for (i = 1; i < argc; i++)
+        initFile = open_text_file(argv[i]);
+    if (initFile == NULL)
+        initFile = open_text_file(NULL);
+    set_current_tab(initFile);
+
+    apply_initial_settings();
 
     exitCode = Fl::run();
     settings_save();
+    puts("exited");
     return exitCode;
 }
